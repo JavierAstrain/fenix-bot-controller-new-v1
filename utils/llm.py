@@ -1,5 +1,4 @@
 import os, re, duckdb, pandas as pd
-from datetime import datetime
 
 def has_openai():
     return bool(os.environ.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))
@@ -28,83 +27,48 @@ def safe_sql(sql: str) -> bool:
     return s.startswith("select ") and all(kw not in s for kw in [" insert ", " update ", " delete ", " drop ", " alter "])
 
 def _normalize_sql(sql: str, params: dict | None = None) -> str:
-    """Quita fences/; extras, reemplaza placeholders y garantiza un solo LIMIT al final."""
-    if not isinstance(sql, str):
-        return ""
-
-    # 1) Extraer bloque ```sql``` si vino con fences
+    if not isinstance(sql, str): return ""
     m = re.search(r"```sql(.*?)```", sql, flags=re.S | re.I)
-    if m:
-        sql = m.group(1)
+    if m: sql = m.group(1)
     sql = sql.strip()
-
-    # 2) Reemplazar placeholders típicos si el modelo los emite
     p = params or {}
     mes  = str(p.get("MES", "")) or ""
     anio = str(p.get("ANIO", "")) or ""
     hor  = str(p.get("HORIZONTE_DIAS", 7))
-    # MES/ANIO solo si fueron provistos; si no, deja tal cual
-    if mes:
-        sql = re.sub(r"\bMES_SELECCIONADO\b", mes, sql, flags=re.I)
+    if mes: sql = re.sub(r"\bMES_SELECCIONADO\b", mes, sql, flags=re.I)
     if anio:
         sql = re.sub(r"\bANIO_SELECCIONADO\b", anio, sql, flags=re.I)
         sql = re.sub(r"\bAÑO_SELECCIONADO\b", anio, sql, flags=re.I)
     sql = re.sub(r"\bHORIZONTE_DIAS\b", hor, sql, flags=re.I)
-
-    # 3) Quitar ; finales y normalizar espacios
     sql = re.sub(r";+\s*$", "", sql)
     sql = re.sub(r"\s+", " ", sql).strip()
-
-    # 4) Garantizar un único LIMIT al final
-    #    - elimina todos los LIMIT del final (si hay varios)
+    # elimina límites finales repetidos
     sql = re.sub(r"(?:\s+limit\s+\d+\s*)+$", "", sql, flags=re.I)
-    #    - si ya contiene LIMIT en alguna parte (p.ej. subquery), respetamos y no añadimos otro
-    has_any_limit = re.search(r"\blimit\b", sql, flags=re.I) is not None
-    if not has_any_limit:
+    # añade limit si no hay
+    if re.search(r"\blimit\b", sql, flags=re.I) is None:
         sql += " LIMIT 200"
-
-    return sql.strip()
+    return sql
 
 def nl2sql(question: str, schema_hint: str, params: dict | None = None) -> str | None:
-    """
-    NL -> SQL (DuckDB) sobre vistas canónicas:
-      - MB: datos de MODELO_BOT con derivados (entregado_bool, no_facturado_bool, etc.)
-      - FIN: FINANZAS con por_pagar_bool, etc.
-
-    Reglas:
-      - Si usas MB, proyecta primero COALESCE(MB.patente, MB.ot) AS id cuando tenga sentido.
-      - Evita SELECT *.
-      - Usa CURRENT_DATE para fechas relativas.
-      - 'entregados' = MB.entregado_bool = TRUE
-      - 'no facturado' = MB.no_facturado_bool = TRUE
-      - 'en taller' = MB.entregado_bool = FALSE
-      - 'por pagar' = FIN.por_pagar_bool = TRUE
-      - Un solo LIMIT (200) si no se especifica.
-    """
     if not has_openai():
         return None
-
     p = params or {}
     H = p.get("HORIZONTE_DIAS", 7)
-
     examples = f"""
 # Esquema disponible
 {schema_hint}
 
 # Instrucciones
 - Devuelve SOLO una consulta SQL DuckDB válida y segura (sin comentarios ni explicación).
-- No uses placeholders textuales; usa números/expresiones literales.
-- Si hay mes en la pregunta (ej. 'marzo'), usa el número (marzo=3).
-- Si no se menciona el año, no filtres por año.
-- Si se habla de 'próximos X días', usa CURRENT_DATE + INTERVAL X DAY; por defecto X={H}.
-- Si la consulta usa MB, selecciona primero COALESCE(MB.patente, MB.ot) AS id si corresponde.
-- No agregues ';' al final. Un único LIMIT si es necesario.
-
-# Equivalencias
-- 'entregados' -> MB.entregado_bool = TRUE
-- 'no facturado' -> MB.no_facturado_bool = TRUE
-- 'en taller' -> MB.entregado_bool = FALSE
-- 'por pagar' -> FIN.por_pagar_bool = TRUE
+- Usa las vistas MB y FIN. Evita SELECT *.
+- Si usas MB, selecciona primero COALESCE(MB.patente, MB.ot) AS id si corresponde.
+- Usa CURRENT_DATE para fechas relativas.
+- 'entregados' = MB.entregado_bool = TRUE
+- 'no facturado' = MB.no_facturado_bool = TRUE
+- 'en taller' = MB.entregado_bool = FALSE
+- 'por pagar' = FIN.por_pagar_bool = TRUE
+- Para facturación mensual usa COALESCE(MB.factura_fecha, MB.fecha_entrega) = MB.fecha_op
+- Un solo LIMIT (200) si no se especifica. No agregues ';'.
 
 # Ejemplos
 Q: ¿Cuáles son los vehículos entregados que aún no han sido facturas?
@@ -127,7 +91,7 @@ Q: Facturación de marzo por tipo de cliente
 A:
 SELECT MB.tipo_cliente, SUM(MB.monto) AS monto
 FROM MB
-WHERE EXTRACT(month FROM MB.fecha_entrega) = 3
+WHERE EXTRACT(month FROM MB.fecha_op) = 3
 GROUP BY MB.tipo_cliente
 ORDER BY monto DESC
 LIMIT 200
