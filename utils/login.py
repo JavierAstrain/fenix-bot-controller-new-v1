@@ -16,6 +16,7 @@ def ensure_login():
     st.markdown("### 🔐 Iniciar sesión")
     u = st.text_input("Usuario", value="", key="login_user")
     p = st.text_input("Contraseña", value="", type="password", key="login_pass")
+
 if st.button("Ingresar", type="primary"):
     user = st.secrets.get("APP_USERNAME", st.secrets.get("USER", "admin"))
     pwd  = st.secrets.get("APP_PASSWORD", st.secrets.get("PASSWORD", "admin"))
