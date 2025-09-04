@@ -184,3 +184,105 @@ def skill_sin_aprobacion(df_raw):
     cols = [c for c in ["id","NOMBRE_CLIENTE","FECHA_RECEPCION","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
     t = t[cols].sort_values("NUMERO_DIAS_EN_PLANTA", ascending=False).head(200)
     return _with_id_first(t), None
+
+# --------- Heurísticas libres en español (catch-all) ---------
+SPANISH_MONTHS = {
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,
+    "noviembre":11,"diciembre":12
+}
+
+def _parse_freeform_flags(q: str):
+    """Lee palabras clave EN/ES para armado de filtros."""
+    s = _norm_text(q)
+
+    entregado = None
+    if "entreg" in s:
+        entregado = True
+    if "en taller" in s or "no entreg" in s or "pendiente de entrega" in s:
+        entregado = False
+
+    facturado = None
+    if "sin factura" in s or "no factur" in s or "pendiente de factur" in s:
+        facturado = False
+    if re.search(r"\bfacturad", s) and "no factur" not in s and "sin factura" not in s:
+        facturado = True
+
+    # próximos X días
+    prox_dias = None
+    m = re.search(r"proxim[oa]s?\s+(\d+)\s+d[ií]as", s)
+    if m:
+        prox_dias = int(m.group(1))
+
+    # "mes de marzo [de 2025]" o "marzo 2025"
+    mes, anio = None, None
+    for name, num in SPANISH_MONTHS.items():
+        if re.search(rf"\b{name}\b", s):
+            mes = num
+            break
+    m = re.search(r"(\d{4})", s)
+    if m: anio = int(m.group(1))
+
+    # filtros simples por campos comunes
+    cliente = None
+    m = re.search(r"cliente\s+([a-z0-9\-\. ]+)", s)
+    if m: cliente = m.group(1).strip()
+
+    marca = None
+    m = re.search(r"marca\s+([a-z0-9\-\. ]+)", s)
+    if m: marca = m.group(1).strip()
+
+    patente = None
+    m = re.search(r"patente\s+([a-z0-9\-]+)", s)
+    if m: patente = m.group(1).strip()
+
+    return {
+        "entregado": entregado,
+        "facturado": facturado,
+        "prox_dias": prox_dias,
+        "mes": mes, "anio": anio,
+        "cliente": cliente, "marca": marca, "patente": patente,
+    }
+
+def skill_consulta_vehiculos_freeform(df_raw, question: str):
+    """Cubre la mayoría de preguntas sin crear skills nuevas."""
+    MB = _build_mb(df_raw)
+    f = _parse_freeform_flags(question)
+    t = MB.copy()
+
+    if f["entregado"] is True:
+        t = t[t["entregado_bool"]]
+    elif f["entregado"] is False:
+        t = t[~t["entregado_bool"]]
+
+    if f["facturado"] is True:
+        t = t[t["facturado_bool"]]
+    elif f["facturado"] is False:
+        t = t[t["no_facturado_bool"]]
+
+    if f["cliente"]:
+        t = t[ilike(t["NOMBRE_CLIENTE"], f["cliente"])]
+    if f["marca"]:
+        t = t[t["MARCA"].astype(str).str.lower()==f["marca"].lower()]
+    if f["patente"]:
+        t = t[ilike(t["PATENTE"], f["patente"])]
+
+    # tiempo
+    if f["prox_dias"]:
+        hoy = pd.Timestamp.today().normalize()
+        fin = hoy + pd.Timedelta(days=int(f["prox_dias"]))
+        t = t[t["FECHA_ENTREGA"].between(hoy, fin)]
+    elif f["mes"] and f["anio"]:
+        fecha = pd.to_datetime(t["fecha_op"], errors="coerce")
+        t = t[(fecha.dt.month==int(f["mes"])) & (fecha.dt.year==int(f["anio"]))]
+
+    # salida razonable por defecto
+    cols = [c for c in ["id","NOMBRE_CLIENTE","PATENTE","MARCA",
+                        "FECHA_RECEPCION","FECHA_ENTREGA",
+                        "NUMERO_FACTURA","FECHA_FACTURACION",
+                        "MONTO_NETO","NUMERO_DIAS_EN_PLANTA"]
+            if c in t.columns]
+    if "FECHA_ENTREGA" in cols:
+        t = t.sort_values("FECHA_ENTREGA", ascending=False)
+    return _with_id_first(t.head(200)), None
+
