@@ -1,34 +1,33 @@
 MODELO_BOT:
   ot: "OT"
   patente: "PATENTE"
-
   marca: "MARCA"
   modelo: "MODELO"
   tipo_cliente: "TIPO CLIENTE"
   nombre_cliente: "NOMBRE CLIENTE"
   tipo_vehiculo: "TIPO VEHÍCULO"
   siniestro: "SINIESTRO"
-  sucursal: ""  # si tienes "SUCURSAL" o "SEDE", colócala aquí
+  sucursal: ""  # pon "SUCURSAL" o "SEDE" si existe
 
   estado_servicio: "ESTADO SERVICIO"
   estado_presupuesto: "ESTADO PRESUPUESTO"
 
   fecha_ingreso_planta: "FECHA INGRESO PLANTA"
-  fecha_salida_planta: "FECHA SALIDA PLANTA"
-  fecha_inspeccion: "FECHA INSPECCIÓN"
-  fecha_recepcion: "FECHA RECEPCION"
-  fecha_entrega: "FECHA ENTREGA"
+  fecha_salida_planta:  "FECHA SALIDA PLANTA"
+  fecha_inspeccion:     "FECHA INSPECCIÓN"
+  fecha_recepcion:      "FECHA RECEPCION"
+  fecha_entrega:        "FECHA ENTREGA"
 
-  numero_factura: "NUMERO DE FACTURA"
-  fecha_facturacion: "FECHA DE FACTURACION"
+  numero_factura:     "NUMERO DE FACTURA"
+  fecha_facturacion:  "FECHA DE FACTURACION"
   fecha_pago_factura: "FECHA DE PAGO FACTURA"
-  facturado_flag: "FACTURADO"  # SI/NO
+  facturado_flag:     "FACTURADO"            # SI / NO (clave!)
 
-  monto_neto: "MONTO PRINCIPAL NETO"
-  iva_f: "IVA PRINCIPAL [F]"
-  monto_bruto_f: "MONTO PRINCIPAL BRUTO [F]"
+  monto_neto:     "MONTO PRINCIPAL NETO"
+  iva_f:          "IVA PRINCIPAL [F]"
+  monto_bruto_f:  "MONTO PRINCIPAL BRUTO [F]"
 
   numero_dias_en_planta: "NUMERO DE DIAS EN PLANTA"
-  dias_en_dominio: "DIAS EN DOMINIO"
-  cantidad_vehiculo: "CANTIDAD DE VEHICULO"
-  dias_pago_factura: "DIAS DE PAGO DE FACTURA"
+  dias_en_dominio:       "DIAS EN DOMINIO"
+  cantidad_vehiculo:     "CANTIDAD DE VEHICULO"
+  dias_pago_factura:     "DIAS DE PAGO DE FACTURA"
