@@ -1,0 +1,22 @@
+MODELO_BOT:
+  patente: "PATENTE"           # ej: "Patente" / "Placa"
+  ot: "OT"                     # ej: "N° OT"
+  cliente: "CLIENTE"
+  fecha_recepcion: "FECHA RECEPCION"
+  fecha_entrega: "FECHA ENTREGA"
+  factura_fecha: "FECHA FACTURA"
+  factura_num: "FOLIO FACTURA"
+  facturado_flag: "FACTURADO"  # ej. "Estado Facturación" (Sí/No/Pendiente)
+  estado_entrega: "ESTADO"     # ej. "ENTREGADO", "EN TALLER"
+  tipo_cliente: "TIPO CLIENTE"
+  marca: "MARCA"
+  sucursal: "SUCURSAL"
+  asesor: "ASESOR"
+  monto: "MONTO"               # venta neta / total, etc.
+
+FINANZAS:
+  factura_num: "FOLIO"
+  proveedor: "PROVEEDOR"
+  estado_pago: "ESTADO PAGO"   # Pendiente/Pagado/etc.
+  vencimiento: "VENCIMIENTO"
+  monto: "MONTO"
