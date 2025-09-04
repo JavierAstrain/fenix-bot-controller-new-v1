@@ -1,10 +1,8 @@
-import os, base64
+import os, base64, io
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
-from utils.md import df_to_md
-from utils.schema import build_duckdb_prelude_and_schema
 
 from utils.gsheets import load_sheets
 from utils.skills import (
@@ -18,6 +16,8 @@ from utils.skills import (
 from utils.formatters import format_currency_clp, format_date_ddmmyyyy
 from utils.llm import summarize_markdown, nl2sql, run_duckdb
 from utils.login import ensure_login
+from utils.md import df_to_md
+from utils.schema import build_duckdb_prelude_and_schema
 
 
 # ---- Page config con favicon (isotipo Nexa) ----
@@ -57,7 +57,7 @@ if FENIX_B64:
 # ---- Sidebar con logo Nexa y controles ----
 with st.sidebar:
     try:
-        st.image("assets/Nexa_logo.png", use_column_width=True)
+        st.image("assets/Nexa_logo.png", use_container_width=True)
     except Exception:
         pass
     st.markdown("---")
@@ -107,7 +107,6 @@ def show_table_and_download(df: pd.DataFrame, name: str):
     with c1:
         st.download_button("⬇️ CSV", df.to_csv(index=False).encode("utf-8"), f"{name}.csv", "text/csv")
     with c2:
-        import io
         buff = io.BytesIO()
         with pd.ExcelWriter(buff, engine="xlsxwriter") as writer:
             df.to_excel(writer, index=False, sheet_name="Datos")
@@ -125,39 +124,47 @@ tabs = st.tabs([
 ])
 
 # ---------- Tab 1: Auto-SQL ----------
-prelude_sql, schema = build_duckdb_prelude_and_schema(data)
-params = {"HORIZONTE_DIAS": int(horizonte), "MES": int(mes), "ANIO": int(anio)}
-sql = nl2sql(q, schema_hint=schema, params=params)
-if not sql:
-    st.warning("No pude generar SQL automático (o falta OPENAI_API_KEY). Usa los botones rápidos.")
-else:
-    st.code(sql, language="sql")
-    try:
-        df = run_duckdb(sql, data, prelude_sql=prelude_sql)
+with tabs[0]:
+    st.markdown("### Preguntar libre (Auto-SQL)")
+    st.caption("El modelo traduce tu pregunta a SQL seguro (solo SELECT) sobre MODELO_BOT y FINANZAS.")
 
-        # Reordenar: ID (patente/ot) primero si existe
-        cols = list(df.columns)
-        id_col = next((c for c in cols if c.lower() in ("id","patente","placa")), None)
-        if not id_col:
-            id_col = next((c for c in cols if c.lower() in ("ot","orden de trabajo")), None)
-        if id_col:
-            cols = [id_col] + [c for c in cols if c != id_col]
-            df = df[cols]
+    q = st.text_input("Pregunta", "Facturación de marzo por tipo de cliente")
+    if st.button("Responder", key="free_q"):
+        # Construimos vistas canónicas MB/FIN + schema para el LLM
+        prelude_sql, schema = build_duckdb_prelude_and_schema(data)
+        params = {"HORIZONTE_DIAS": int(horizonte), "MES": int(mes), "ANIO": int(anio)}
 
-        if df.empty:
-            st.info("Sin resultados.")
+        sql = nl2sql(q, schema_hint=schema, params=params)
+        if not sql:
+            st.warning("No pude generar SQL automático (o falta OPENAI_API_KEY). Usa los botones rápidos.")
         else:
-            show_table_and_download(df, "consulta_autosql")
-            num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-            cat_cols = [c for c in df.columns if df[c].dtype == object]
-            if num_cols and cat_cols:
-                fig = px.bar(df, x=cat_cols[0], y=num_cols[0])
-                st.plotly_chart(fig, use_container_width=True)
-            st.markdown("### Resumen")
-            st.write(summarize_markdown(df_to_md(df), q))
-    except Exception as e:
-        st.error(f"Error al ejecutar SQL: {e}")
+            st.code(sql, language="sql")
+            try:
+                df = run_duckdb(sql, data, prelude_sql=prelude_sql)
 
+                # Reordenar: ID (patente/placa u OT) primero si existe
+                cols = list(df.columns)
+                id_col = next((c for c in cols if c.lower() in ("id", "patente", "placa")), None)
+                if not id_col:
+                    id_col = next((c for c in cols if c.lower() in ("ot", "orden de trabajo")), None)
+                if id_col:
+                    cols = [id_col] + [c for c in cols if c != id_col]
+                    df = df[cols]
+
+                if df.empty:
+                    st.info("Sin resultados.")
+                else:
+                    show_table_and_download(df, "consulta_autosql")
+                    # Gráfico básico si hay 1 categórica + 1 numérica
+                    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+                    cat_cols = [c for c in df.columns if df[c].dtype == object]
+                    if num_cols and cat_cols:
+                        fig = px.bar(df, x=cat_cols[0], y=num_cols[0])
+                        st.plotly_chart(fig, use_container_width=True)
+                    st.markdown("### Resumen")
+                    st.write(summarize_markdown(df_to_md(df), q))
+            except Exception as e:
+                st.error(f"Error al ejecutar SQL: {e}")
 
 # ---------- Tab 2: Botones rápidos ----------
 with tabs[1]:
@@ -179,7 +186,7 @@ with tabs[1]:
                 st.info("Sin resultados.")
             else:
                 show_table_and_download(table, "entregados_sin_factura")
-                st.write(summarize_markdown(table.head(50).to_markdown(index=False), "Entregados sin factura"))
+                st.write(summarize_markdown(df_to_md(table), "Entregados sin factura"))
 
     with col[1]:
         st.subheader("2) Facturas a pagar próximos días")
@@ -187,14 +194,14 @@ with tabs[1]:
             if df_fin is None:
                 st.warning("No se encontró hoja FINANZAS.")
             else:
-                table, err = facturas_por_pagar(df_fin, horizonte_dias=st.session_state.get("horizonte", 7) or 7)
+                table, err = facturas_por_pagar(df_fin, horizonte_dias=int(horizonte))
                 if err:
                     st.warning(err)
                 elif table.empty:
                     st.info("Sin resultados.")
                 else:
                     show_table_and_download(table, "facturas_por_pagar")
-                    st.write(summarize_markdown(table.head(50).to_markdown(index=False), "Facturas por pagar"))
+                    st.write(summarize_markdown(df_to_md(table), "Facturas por pagar"))
 
     with col[0]:
         st.subheader("3) Top 10 en taller (no entregados)")
@@ -212,7 +219,7 @@ with tabs[1]:
     with col[1]:
         st.subheader("4) Facturación por mes / tipo cliente")
         if st.button("Ejecutar 4"):
-            table, err = facturacion_por_mes_tipo(df_main, mes=int(st.session_state.get("mes", datetime.now().month) or datetime.now().month), anio=int(st.session_state.get("anio", datetime.now().year) or datetime.now().year))
+            table, err = facturacion_por_mes_tipo(df_main, mes=int(mes), anio=int(anio))
             if err:
                 st.warning(err)
             elif table.empty:
@@ -225,7 +232,7 @@ with tabs[1]:
     with col[0]:
         st.subheader("5) Entregas próximos días SIN facturación")
         if st.button("Ejecutar 5"):
-            table, err = entregas_proximos_dias_sin_factura(df_main, horizonte_dias=st.session_state.get("horizonte", 7) or 7)
+            table, err = entregas_proximos_dias_sin_factura(df_main, horizonte_dias=int(horizonte))
             if err:
                 st.warning(err)
             elif table.empty:
@@ -243,4 +250,4 @@ with tabs[1]:
                 st.info("Sin resultados.")
             else:
                 show_table_and_download(table, "sin_aprobacion")
-                st.write(summarize_markdown(table.head(50).to_markdown(index=False), "En taller sin aprobación"))
+                st.write(summarize_markdown(df_to_md(table), "En taller sin aprobación"))
