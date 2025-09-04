@@ -1,4 +1,4 @@
-# utils/skills.py  — SOLO MODELO_BOT (estricto por bandera)
+# utils/skills.py  — SOLO MODELO_BOT (estricto por bandera + parser libre robusto)
 import os, re, yaml, unicodedata
 import pandas as pd
 import numpy as np
@@ -17,7 +17,7 @@ except Exception:
 def _norm_text(s: str) -> str:
     if s is None: return ""
     s = unicodedata.normalize("NFKD", str(s))
-    s = "".join(c for c in s if not unicodedata.category(c).startswith("M"))  # sin acentos
+    s = "".join(c for c in s if not unicodedata.category(c).startswith("M"))
     s = s.lower().strip()
     s = re.sub(r"\s+", " ", s)
     return s
@@ -32,9 +32,6 @@ def _to_number(series):
     return pd.to_numeric(s, errors="coerce")
 
 def _get(df, header_fallback: str, field: str):
-    """
-    Obtiene la columna según column_map.yaml; si falta, intenta por un sinónimo leve.
-    """
     name = (COLUMN_MAP.get("MODELO_BOT", {}) or {}).get(field, "")
     if name and name in df.columns:
         return df[name]
@@ -45,7 +42,7 @@ def _get(df, header_fallback: str, field: str):
 def _build_mb(df: pd.DataFrame) -> pd.DataFrame:
     MB = pd.DataFrame(index=df.index)
 
-    # Identificadores y cliente/vehículo
+    # Identificadores / cliente
     MB["OT"]       = _get(df, "OT", "ot")
     MB["PATENTE"]  = _get(df, "PATENTE", "patente")
     MB["MARCA"]    = _get(df, "MARCA", "marca")
@@ -70,7 +67,7 @@ def _build_mb(df: pd.DataFrame) -> pd.DataFrame:
     MB["NUMERO_FACTURA"]     = _get(df, "NUMERO DE FACTURA", "numero_factura")
     MB["FECHA_FACTURACION"]  = _parse_date_col(_get(df, "FECHA DE FACTURACION", "fecha_facturacion"))
     MB["FECHA_PAGO_FACTURA"] = _parse_date_col(_get(df, "FECHA DE PAGO FACTURA", "fecha_pago_factura"))
-    MB["FACTURADO_FLAG"]     = _get(df, "FACTURADO", "facturado_flag")  # SI / NO
+    MB["FACTURADO_FLAG"]     = _get(df, "FACTURADO", "facturado_flag")  # SI/NO
 
     # Montos / KPIs
     MB["MONTO_NETO"]    = _to_number(_get(df, "MONTO PRINCIPAL NETO", "monto_neto"))
@@ -86,17 +83,14 @@ def _build_mb(df: pd.DataFrame) -> pd.DataFrame:
     estado_norm = MB["ESTADO_SERVICIO"].map(_norm_text)
     fact_norm   = MB["FACTURADO_FLAG"].map(_norm_text)
 
-    # ENTREGADO: SOLO si ESTADO SERVICIO contiene "entreg"
     MB["entregado_bool"] = estado_norm.str.contains("entreg", na=False)
 
-    # FACTURADO: SOLO si FACTURADO_FLAG ∈ truthy; NO FACTURADO si ∈ falsy o vacío.
     FACTURADO_TRUE  = {"si","sí","si.","si !","si ok","sí ok","facturado","facturada","emitida","emitido","ok","con factura"}
     FACTURADO_FALSE = {"no","no.","no !","pendiente","por facturar","sin factura","no emitida","no emitido","0","false",""}
-
     MB["facturado_bool"]    = fact_norm.isin(FACTURADO_TRUE)
     MB["no_facturado_bool"] = fact_norm.isin(FACTURADO_FALSE) | (fact_norm == "")
 
-    # --------- Derivados útiles ----------
+    # --------- Derivados ----------
     MB["fecha_op"] = MB["FECHA_FACTURACION"].combine_first(MB["FECHA_ENTREGA"]).combine_first(MB["FECHA_RECEPCION"])
 
     if MB["NUMERO_DIAS_EN_PLANTA"].isna().all():
@@ -107,7 +101,7 @@ def _build_mb(df: pd.DataFrame) -> pd.DataFrame:
     MB["dias_desde_entrega"] = (pd.Timestamp.today() - MB["FECHA_ENTREGA"]).dt.days
     MB["id"] = MB["PATENTE"].replace("", np.nan).fillna(MB["OT"])
 
-    # diagnóstico para pestaña Calibración
+    # diagnóstico
     MB["_estado_servicio_norm"] = estado_norm
     MB["_facturado_flag_norm"]  = fact_norm
     return MB
@@ -119,35 +113,29 @@ def _with_id_first(df):
         return df[[idc] + [c for c in cols if c != idc]]
     return df
 
-# ----------------- SKILLS -----------------
+# ----------------- SKILLS deterministas -----------------
 def skill_entregados_sin_factura(df_raw, **f):
     MB = _build_mb(df_raw)
     t = MB[MB["entregado_bool"] & MB["no_facturado_bool"]].copy()
-
     if v:=f.get("cliente"):      t = t[ilike(t["NOMBRE_CLIENTE"], v)]
     if v:=f.get("tipo_cliente"): t = t[t["TIPO_CLIENTE"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("marca"):        t = t[t["MARCA"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("sucursal") and "SUCURSAL" in t.columns: t = t[t["SUCURSAL"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("desde"):        t = t[t["FECHA_ENTREGA"]>=pd.to_datetime(v, errors="coerce")]
     if v:=f.get("hasta"):        t = t[t["FECHA_ENTREGA"]<=pd.to_datetime(v, errors="coerce")]
-
-    cols = [c for c in ["id","NOMBRE_CLIENTE","FECHA_ENTREGA","NUMERO_FACTURA","FECHA_FACTURACION",
-                        "MONTO_NETO","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
+    cols = [c for c in ["id","NOMBRE_CLIENTE","PATENTE","MARCA","FECHA_ENTREGA","NUMERO_FACTURA","FECHA_FACTURACION","MONTO_NETO","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
     return _with_id_first(t[cols].sort_values("FECHA_ENTREGA", ascending=False).head(200)), None
 
 def skill_entregados_facturados(df_raw, **f):
     MB = _build_mb(df_raw)
     t = MB[MB["entregado_bool"] & MB["facturado_bool"]].copy()
-
     if v:=f.get("cliente"):      t = t[ilike(t["NOMBRE_CLIENTE"], v)]
     if v:=f.get("tipo_cliente"): t = t[t["TIPO_CLIENTE"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("marca"):        t = t[t["MARCA"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("sucursal") and "SUCURSAL" in t.columns: t = t[t["SUCURSAL"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("desde"):        t = t[t["FECHA_ENTREGA"]>=pd.to_datetime(v, errors="coerce")]
     if v:=f.get("hasta"):        t = t[t["FECHA_ENTREGA"]<=pd.to_datetime(v, errors="coerce")]
-
-    cols = [c for c in ["id","NOMBRE_CLIENTE","NUMERO_FACTURA","FECHA_FACTURACION",
-                        "FECHA_ENTREGA","MONTO_NETO","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
+    cols = [c for c in ["id","NOMBRE_CLIENTE","PATENTE","MARCA","NUMERO_FACTURA","FECHA_FACTURACION","FECHA_ENTREGA","MONTO_NETO","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
     return _with_id_first(t[cols].sort_values("FECHA_ENTREGA", ascending=False).head(200)), None
 
 def skill_top_en_taller(df_raw, topn=10, **f):
@@ -156,7 +144,7 @@ def skill_top_en_taller(df_raw, topn=10, **f):
     if v:=f.get("marca"):        t = t[t["MARCA"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("tipo_cliente"): t = t[t["TIPO_CLIENTE"].astype(str).str.lower()==str(v).lower()]
     if v:=f.get("sucursal") and "SUCURSAL" in t.columns: t = t[t["SUCURSAL"].astype(str).str.lower()==str(v).lower()]
-    cols = [c for c in ["id","NOMBRE_CLIENTE","FECHA_RECEPCION","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
+    cols = [c for c in ["id","NOMBRE_CLIENTE","PATENTE","MARCA","FECHA_RECEPCION","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
     t = t[cols].sort_values("NUMERO_DIAS_EN_PLANTA", ascending=False).head(int(topn))
     return _with_id_first(t), None
 
@@ -164,125 +152,155 @@ def skill_facturacion_por_mes_tipo(df_raw, mes:int, anio:int):
     MB = _build_mb(df_raw)
     fecha = pd.to_datetime(MB["fecha_op"], errors="coerce")
     t = MB[(fecha.dt.month==int(mes)) & (fecha.dt.year==int(anio))].copy()
-    if t.empty:
-        return pd.DataFrame(columns=["TIPO_CLIENTE","MONTO_NETO"]), None
+    if t.empty: return pd.DataFrame(columns=["TIPO_CLIENTE","MONTO_NETO"]), None
     t = t.groupby("TIPO_CLIENTE", dropna=False, as_index=False)["MONTO_NETO"].sum().sort_values("MONTO_NETO", ascending=False)
     return t, None
 
 def skill_entregas_proximos_dias_sin_factura(df_raw, horizonte_dias:int=7):
     MB = _build_mb(df_raw)
-    hoy = pd.Timestamp.today()
+    hoy = pd.Timestamp.today().normalize()
     lim = hoy + pd.Timedelta(days=int(horizonte_dias))
     t = MB[(MB["entregado_bool"]) & (MB["no_facturado_bool"]) & MB["FECHA_ENTREGA"].between(hoy, lim)].copy()
-    cols = [c for c in ["id","NOMBRE_CLIENTE","FECHA_ENTREGA","dias_desde_entrega"] if c in t.columns]
+    cols = [c for c in ["id","NOMBRE_CLIENTE","PATENTE","MARCA","FECHA_ENTREGA","dias_desde_entrega"] if c in t.columns]
     t = t[cols].sort_values("FECHA_ENTREGA", ascending=True).head(200)
     return _with_id_first(t), None
 
 def skill_sin_aprobacion(df_raw):
     MB = _build_mb(df_raw)
     t = MB[(~MB["entregado_bool"]) & (MB["no_facturado_bool"])].copy()
-    cols = [c for c in ["id","NOMBRE_CLIENTE","FECHA_RECEPCION","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
+    cols = [c for c in ["id","NOMBRE_CLIENTE","PATENTE","MARCA","FECHA_RECEPCION","NUMERO_DIAS_EN_PLANTA"] if c in t.columns]
     t = t[cols].sort_values("NUMERO_DIAS_EN_PLANTA", ascending=False).head(200)
     return _with_id_first(t), None
 
-# --------- Heurísticas libres en español (catch-all) ---------
+# ----------------- Fallback libre robusto -----------------
 SPANISH_MONTHS = {
     "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
     "julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,
     "noviembre":11,"diciembre":12
 }
 
-def _parse_freeform_flags(q: str):
-    """Lee palabras clave EN/ES para armado de filtros."""
-    s = _norm_text(q)
+_DATE_RE = r"(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})"
 
+def _parse_freeform(question: str):
+    s = _norm_text(question)
+
+    # foco de fecha (elige columna)
+    date_focus = None
+    if "factur" in s:     date_focus = "FECHA_FACTURACION"
+    if "entreg" in s:     date_focus = "FECHA_ENTREGA"
+    if "recep"  in s:     date_focus = "FECHA_RECEPCION"
+    if "pago"   in s:     date_focus = "FECHA_PAGO_FACTURA"
+
+    # flags de estado
     entregado = None
-    if "entreg" in s:
-        entregado = True
-    if "en taller" in s or "no entreg" in s or "pendiente de entrega" in s:
-        entregado = False
+    if "entreg" in s:                      entregado = True
+    if "en taller" in s or "no entreg" in s: entregado = False
 
     facturado = None
-    if "sin factura" in s or "no factur" in s or "pendiente de factur" in s:
-        facturado = False
-    if re.search(r"\bfacturad", s) and "no factur" not in s and "sin factura" not in s:
-        facturado = True
+    if "sin factura" in s or "no factur" in s or "pendiente de factur" in s: facturado = False
+    if re.search(r"\bfacturad", s) and "no factur" not in s and "sin factura" not in s: facturado = True
 
-    # próximos X días
-    prox_dias = None
-    m = re.search(r"proxim[oa]s?\s+(\d+)\s+d[ií]as", s)
-    if m:
-        prox_dias = int(m.group(1))
-
-    # "mes de marzo [de 2025]" o "marzo 2025"
+    # meses / año
     mes, anio = None, None
     for name, num in SPANISH_MONTHS.items():
-        if re.search(rf"\b{name}\b", s):
-            mes = num
-            break
-    m = re.search(r"(\d{4})", s)
+        if re.search(rf"\b{name}\b", s): mes = num; break
+    m = re.search(r"\b(20\d{2}|19\d{2})\b", s)
     if m: anio = int(m.group(1))
 
-    # filtros simples por campos comunes
-    cliente = None
-    m = re.search(r"cliente\s+([a-z0-9\-\. ]+)", s)
-    if m: cliente = m.group(1).strip()
+    # fechas explícitas
+    d1 = re.search(r"desde\s+" + _DATE_RE, s)
+    d2 = re.search(r"hasta\s+" + _DATE_RE, s)
+    start = pd.to_datetime(d1.group(1), dayfirst=True, errors="coerce") if d1 else None
+    end   = pd.to_datetime(d2.group(1), dayfirst=True, errors="coerce") if d2 else None
+    # también "del X al Y"
+    d12 = re.search(r"del\s+" + _DATE_RE + r"\s+al\s+" + _DATE_RE, s)
+    if d12:
+        start = pd.to_datetime(d12.group(1), dayfirst=True, errors="coerce")
+        end   = pd.to_datetime(d12.group(2), dayfirst=True, errors="coerce")
 
-    marca = None
-    m = re.search(r"marca\s+([a-z0-9\-\. ]+)", s)
-    if m: marca = m.group(1).strip()
+    prox_dias = None
+    m = re.search(r"proxim[oa]s?\s+(\d+)\s+d[ií]as", s)
+    if m: prox_dias = int(m.group(1))
+    ult_dias = None
+    m = re.search(r"[uú]ltim[oa]s?\s+(\d+)\s+d[ií]as", s)
+    if m: ult_dias = int(m.group(1))
 
-    patente = None
-    m = re.search(r"patente\s+([a-z0-9\-]+)", s)
-    if m: patente = m.group(1).strip()
+    # filtros comunes
+    def pick(pattern):
+        m = re.search(pattern, s)
+        return m.group(1).strip() if m else None
+
+    cliente = pick(r"cliente\s+([a-z0-9\-\. ]+)")
+    marca   = pick(r"marca\s+([a-z0-9\-\. ]+)")
+    patente = pick(r"patente\s+([a-z0-9\-]+)")
+    tipo_cli = pick(r"tipo (?:de )?cliente\s+([a-z0-9\-\. ]+)")
+    sucursal = pick(r"(?:sucursal|sede)\s+([a-z0-9\-\. ]+)")
+    estado   = pick(r"estado (?:servicio|del servicio)\s+([a-z0-9\-\. ]+)")
 
     return {
+        "date_focus": date_focus,
         "entregado": entregado,
         "facturado": facturado,
-        "prox_dias": prox_dias,
         "mes": mes, "anio": anio,
+        "start": start, "end": end,
+        "prox_dias": prox_dias, "ult_dias": ult_dias,
         "cliente": cliente, "marca": marca, "patente": patente,
+        "tipo_cliente": tipo_cli, "sucursal": sucursal, "estado_servicio": estado,
     }
 
+def _choose_date_col(MB: pd.DataFrame, focus: str | None) -> str:
+    if focus in {"FECHA_FACTURACION","FECHA_ENTREGA","FECHA_RECEPCION","FECHA_PAGO_FACTURA"}:
+        return focus
+    # por defecto si no se indicó nada:
+    return "fecha_op" if "fecha_op" in MB.columns else "FECHA_ENTREGA"
+
+def parse_freeform_query(q: str):
+    return _parse_freeform(q)
+
 def skill_consulta_vehiculos_freeform(df_raw, question: str):
-    """Cubre la mayoría de preguntas sin crear skills nuevas."""
     MB = _build_mb(df_raw)
-    f = _parse_freeform_flags(question)
+    f = _parse_freeform(question)
     t = MB.copy()
 
-    if f["entregado"] is True:
-        t = t[t["entregado_bool"]]
-    elif f["entregado"] is False:
-        t = t[~t["entregado_bool"]]
+    # filtros por estado
+    if f["entregado"] is True:  t = t[t["entregado_bool"]]
+    if f["entregado"] is False: t = t[~t["entregado_bool"]]
+    if f["facturado"] is True:  t = t[t["facturado_bool"]]
+    if f["facturado"] is False: t = t[t["no_facturado_bool"]]
 
-    if f["facturado"] is True:
-        t = t[t["facturado_bool"]]
-    elif f["facturado"] is False:
-        t = t[t["no_facturado_bool"]]
+    # filtros por texto
+    if f["cliente"]:      t = t[ilike(t["NOMBRE_CLIENTE"], f["cliente"])]
+    if f["marca"]:        t = t[t["MARCA"].astype(str).str.lower()==f["marca"].lower()]
+    if f["patente"]:      t = t[ilike(t["PATENTE"], f["patente"])]
+    if f["tipo_cliente"]: t = t[t["TIPO_CLIENTE"].astype(str).str.lower()==f["tipo_cliente"].lower()]
+    if f["sucursal"] and "SUCURSAL" in t.columns:
+        t = t[t["SUCURSAL"].astype(str).str.lower()==f["sucursal"].lower()]
+    if f["estado_servicio"]:
+        t = t[ilike(t["ESTADO_SERVICIO"], f["estado_servicio"])]
 
-    if f["cliente"]:
-        t = t[ilike(t["NOMBRE_CLIENTE"], f["cliente"])]
-    if f["marca"]:
-        t = t[t["MARCA"].astype(str).str.lower()==f["marca"].lower()]
-    if f["patente"]:
-        t = t[ilike(t["PATENTE"], f["patente"])]
-
-    # tiempo
+    # filtros de tiempo
+    date_col = _choose_date_col(MB, f["date_focus"])
     if f["prox_dias"]:
         hoy = pd.Timestamp.today().normalize()
         fin = hoy + pd.Timedelta(days=int(f["prox_dias"]))
-        t = t[t["FECHA_ENTREGA"].between(hoy, fin)]
+        t = t[t[date_col].between(hoy, fin)]
+    elif f["ult_dias"]:
+        fin = pd.Timestamp.today().normalize()
+        ini = fin - pd.Timedelta(days=int(f["ult_dias"]))
+        t = t[t[date_col].between(ini, fin)]
+    elif f["start"] is not None or f["end"] is not None:
+        ini = f["start"] or pd.Timestamp.min
+        fin = f["end"] or pd.Timestamp.max
+        t = t[t[date_col].between(ini, fin)]
     elif f["mes"] and f["anio"]:
-        fecha = pd.to_datetime(t["fecha_op"], errors="coerce")
+        fecha = pd.to_datetime(t[date_col], errors="coerce")
         t = t[(fecha.dt.month==int(f["mes"])) & (fecha.dt.year==int(f["anio"]))]
 
-    # salida razonable por defecto
+    # salida
     cols = [c for c in ["id","NOMBRE_CLIENTE","PATENTE","MARCA",
-                        "FECHA_RECEPCION","FECHA_ENTREGA",
-                        "NUMERO_FACTURA","FECHA_FACTURACION",
-                        "MONTO_NETO","NUMERO_DIAS_EN_PLANTA"]
+                        "FECHA_RECEPCION","FECHA_ENTREGA","NUMERO_FACTURA","FECHA_FACTURACION",
+                        "MONTO_NETO","NUMERO_DIAS_EN_PLANTA","ESTADO_SERVICIO","FACTURADO_FLAG"]
             if c in t.columns]
-    if "FECHA_ENTREGA" in cols:
+    if "FECHA_ENTREGA" in t.columns:
         t = t.sort_values("FECHA_ENTREGA", ascending=False)
-    return _with_id_first(t.head(200)), None
-
+    return _with_id_first(t.head(300)), None
