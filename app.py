@@ -1,4 +1,4 @@
-# app.py — Agente Fénix (imports a prueba de fallos + diagnóstico en pantalla)
+# app.py — Agente Fénix (failsafe + LLM debug)
 
 import os, sys, io, base64, traceback
 from datetime import datetime
@@ -22,7 +22,7 @@ def _debug_on():
         return str(st.query_params.get("debug", "0")) in ("1", "true", "True")
     except Exception:  # Legacy
         qp = st.experimental_get_query_params()
-        return (qp.get("debug", ["0"])[0] in ("1","true","True"))
+        return (qp.get("debug", ["0"])[0] in ("1", "true", "True"))
 
 if _debug_on():
     st.sidebar.title("🛠️ Debug")
@@ -37,10 +37,6 @@ if _debug_on():
     st.sidebar.write("sys.path[0:4]:", sys.path[:4])
     st.sidebar.info("Quita ?debug=1 para ocultar este panel")
 
-# Muestra algo inmediatamente para evitar “pantalla blanca”
-st.title("🛠️ Agente Fénix")
-st.caption("Inicializando… si algo falla, verás el diagnóstico aquí mismo.")
-
 # Exporta OPENAI_API_KEY desde secrets si existe (opcional)
 try:
     if "OPENAI_API_KEY" not in os.environ and st.secrets.get("OPENAI_API_KEY"):
@@ -49,10 +45,10 @@ except Exception:
     pass
 
 # ------------------------------------------------------------------------------
-# Funciones de importación seguras (intentan con 'utils' y reportan el error)
+# Imports locales con diagnóstico en pantalla
 # ------------------------------------------------------------------------------
 def safe_import(module_path, names):
-    """Importa module_path y extrae 'names'. Si falla, pinta st.error() con traceback y corta."""
+    """Importa module_path y extrae 'names'. Si falla, muestra traceback y detiene."""
     try:
         mod = __import__(module_path, fromlist=names)
         return [getattr(mod, n) for n in names]
@@ -61,24 +57,21 @@ def safe_import(module_path, names):
         st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
         st.stop()
 
-# 1) intenta desde tu paquete local 'utils' (tú ya lo tienes así)
-PKG = "utils"
+PKG = "utils"  # tu carpeta actual
 
-# gsheets / login siempre primero (si esto falla, lo verás en pantalla)
 (load_sheets,) = safe_import(f"{PKG}.gsheets", ["load_sheets"])
 (ensure_login,) = safe_import(f"{PKG}.login", ["ensure_login"])
-
-# el resto
 (format_currency_clp, format_date_ddmmyyyy) = safe_import(
     f"{PKG}.formatters", ["format_currency_clp", "format_date_ddmmyyyy"]
 )
-(summarize_markdown, nl2sql, run_duckdb) = safe_import(
-    f"{PKG}.llm", ["summarize_markdown", "nl2sql", "run_duckdb"]
+
+# 👇 ahora importamos el LLM con funciones de debug
+(summarize_markdown, nl2sql, run_duckdb, has_openai, llm_debug_info) = safe_import(
+    f"{PKG}.llm", ["summarize_markdown", "nl2sql", "run_duckdb", "has_openai", "llm_debug_info"]
 )
+
 (df_to_md,) = safe_import(f"{PKG}.md", ["df_to_md"])
-(build_duckdb_prelude_and_schema,) = safe_import(
-    f"{PKG}.schema", ["build_duckdb_prelude_and_schema"]
-)
+(build_duckdb_prelude_and_schema,) = safe_import(f"{PKG}.schema", ["build_duckdb_prelude_and_schema"])
 (
     skill_entregados_sin_factura,
     skill_facturas_por_pagar,
@@ -123,6 +116,7 @@ with st.sidebar:
     except Exception: pass
     st.markdown("---")
 
+st.title("🛠️ Agente Fénix")
 st.caption("Responde como ChatGPT, con cálculos deterministas sobre MODELO_BOT y FINANZAS.")
 
 # ------------------------------------------------------------------------------
@@ -132,7 +126,7 @@ sheet_id = st.secrets.get("SHEET_ID", "")
 with st.sidebar:
     st.subheader("Conexión")
     try:
-        data = load_sheets(sheet_id, allow_sheets=("MODELO_BOT","FINANZAS"))
+        data = load_sheets(sheet_id, allow_sheets=("MODELO_BOT", "FINANZAS"))
         st.success("Google Sheets conectado (solo lectura).")
         st.write("Hojas:", ", ".join(data.keys()))
     except Exception as e:
@@ -144,6 +138,11 @@ with st.sidebar:
     horizonte = st.number_input("Días (próximos)", 1, 60, value=7, step=1)
     mes = st.number_input("Mes para facturación", 1, 12, value=datetime.now().month)
     anio = st.number_input("Año para facturación", 2000, 2100, value=datetime.now().year)
+
+    st.subheader("Estado LLM")
+    # 👉 aquí mostramos si hay API key, si openai importa y el último error capturado
+    st.write(llm_debug_info())
+
     if st.button("Cerrar sesión"):
         st.session_state.authenticated = False
         st.rerun()
@@ -195,8 +194,10 @@ with tabs[0]:
 
         params = {"HORIZONTE_DIAS": int(horizonte), "MES": int(mes), "ANIO": int(anio)}
         sql = nl2sql(q, schema_hint=schema_hint, params=params)
+
         if not sql:
-            st.warning("No pude generar SQL (¿falta OPENAI_API_KEY?). Usa los botones rápidos.")
+            st.warning("No pude generar SQL. Revisa el 'Estado LLM' en la barra lateral.")
+            st.info(llm_debug_info())
         else:
             st.code(sql, language="sql")
             try:
