@@ -320,3 +320,32 @@ with tabs[1]:
             if err: st.warning(err)
             elif table.empty: st.info("Sin resultados.")
             else: _show(table, "sin_aprobacion")
+
+    tabs = st.tabs(["Preguntar (semántico) + Auto-SQL", "Botones rápidos (6 pruebas)", "Calibración"])
+
+with tabs[2]:
+    st.markdown("### Calibración rápida")
+    st.write("**Objetivo:** verificar el mapeo de columnas. Si algo no corresponde, edita `column_map.yaml`.")
+    df_main = data.get("MODELO_BOT", next(iter(data.values())))
+    df_fin  = data.get("FINANZAS", None)
+
+    st.subheader("MODELO_BOT — columnas disponibles")
+    st.write(list(df_main.columns))
+
+    import yaml, os
+    current_map = {}
+    if os.path.exists("column_map.yaml"):
+        current_map = yaml.safe_load(open("column_map.yaml","r",encoding="utf-8")) or {}
+    st.subheader("Mapeo actual (column_map.yaml)")
+    st.json(current_map)
+
+    from utils.skills import _build_mb, _build_fin  # solo para diagnóstico
+    st.subheader("Preview derivadas (MB)")
+    prev_mb = _build_mb(df_main).head(10)
+    st.dataframe(prev_mb[["id","cliente","fecha_recepcion","fecha_entrega","factura_num","factura_fecha","entregado_bool","no_facturado_bool"]])
+
+    if df_fin is not None:
+        st.subheader("Preview derivadas (FINANZAS)")
+        prev_fin = _build_fin(df_fin).head(10)
+        st.dataframe(prev_fin[["factura_num","proveedor","vencimiento","monto","por_pagar_bool"]])
+
