@@ -1,26 +1,37 @@
-# utils/llm.py
+# utils/llm.py — compatibilidad openai v0/v1 + debug claro + import perezoso de duckdb
 import os, re
 import pandas as pd
 
 _LAST_LLM_ERROR: str | None = None
+_OPENAI_VERSION: str | None = None
+_OPENAI_MODE: str | None = None  # "v1" o "v0"
 
+# ---------------------- utilidades de estado/debug ----------------------
 def has_openai() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY"))
 
 def llm_debug_info() -> str:
-    """Texto corto con el estado del LLM para mostrar en UI."""
-    global _LAST_LLM_ERROR
-    parts = []
-    parts.append(f"OPENAI_API_KEY presente: {'sí' if has_openai() else 'no'}")
+    parts = [f"OPENAI_API_KEY presente: {'sí' if has_openai() else 'no'}"]
+    # versión y modo
+    global _OPENAI_VERSION, _OPENAI_MODE, _LAST_LLM_ERROR
     try:
-        import openai  # noqa
-        parts.append("openai import: ok")
+        import openai  # noqa: F401
+        if _OPENAI_VERSION is None:
+            try:
+                from importlib.metadata import version
+                _OPENAI_VERSION = version("openai")
+            except Exception:
+                _OPENAI_VERSION = "desconocida"
+        parts.append(f"openai import: ok (v{_OPENAI_VERSION})")
+        if _OPENAI_MODE:
+            parts.append(f"modo: {_OPENAI_MODE}")
     except Exception as e:
         parts.append(f"openai import: ERROR ({e})")
     if _LAST_LLM_ERROR:
-        parts.append(f"último error LLM: { _LAST_LLM_ERROR }")
+        parts.append(f"último error LLM: {_LAST_LLM_ERROR}")
     return " | ".join(parts)
 
+# ---------------------- duckdb perezoso ----------------------
 def _import_duckdb():
     try:
         import duckdb
@@ -28,37 +39,20 @@ def _import_duckdb():
     except Exception as e:
         return None, e
 
-def summarize_markdown(table_md: str, question: str) -> str:
-    if not has_openai():
-        return "Resumen: (sin OPENAI_API_KEY) Se muestran los resultados solicitados."
-    try:
-        from openai import OpenAI
-        client = OpenAI()
-        prompt = (
-            "Eres un analista. Resume y prioriza para gestión la siguiente tabla "
-            f"respecto a la pregunta: \"{question}\". Sé claro y accionable.\n\n{table_md}"
-        )
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        return resp.choices[0].message.content
-    except Exception as e:
-        global _LAST_LLM_ERROR
-        _LAST_LLM_ERROR = f"LLM summarize error: {e}"
-        return f"(Error LLM: {e})"
-
+# ---------------------- helpers SQL ----------------------
 def _normalize_sql(sql: str, params: dict | None = None) -> str:
-    if not isinstance(sql, str): return ""
+    if not isinstance(sql, str):
+        return ""
     m = re.search(r"```sql(.*?)```", sql, flags=re.S | re.I)
-    if m: sql = m.group(1)
+    if m:
+        sql = m.group(1)
     sql = sql.strip()
     p = params or {}
-    mes  = str(p.get("MES", "")) or ""
+    mes = str(p.get("MES", "")) or ""
     anio = str(p.get("ANIO", "")) or ""
-    hor  = str(p.get("HORIZONTE_DIAS", 7))
-    if mes:  sql = re.sub(r"\bMES_SELECCIONADO\b", mes, sql, flags=re.I)
+    hor = str(p.get("HORIZONTE_DIAS", 7))
+    if mes:
+        sql = re.sub(r"\bMES_SELECCIONADO\b", mes, sql, flags=re.I)
     if anio:
         sql = re.sub(r"\bANIO_SELECCIONADO\b|\bAÑO_SELECCIONADO\b", anio, sql, flags=re.I)
     sql = re.sub(r"\bHORIZONTE_DIAS\b", hor, sql, flags=re.I)
@@ -69,14 +63,78 @@ def _normalize_sql(sql: str, params: dict | None = None) -> str:
         sql += " LIMIT 200"
     return sql
 
-def nl2sql(question: str, schema_hint: str, params: dict | None = None) -> str | None:
+# ---------------------- cliente openai compatible ----------------------
+def _make_client():
+    """
+    Devuelve (modo, cliente) donde:
+      - modo 'v1' => from openai import OpenAI(); usar client.chat.completions.create(...)
+      - modo 'v0' => import openai (legacy); usar openai.ChatCompletion.create(...)
+    """
+    global _OPENAI_MODE, _OPENAI_VERSION
+    try:
+        import openai as _oa
+        try:
+            from importlib.metadata import version
+            _OPENAI_VERSION = version("openai")
+        except Exception:
+            _OPENAI_VERSION = getattr(_oa, "__version__", "desconocida")
+
+        # ¿existe la clase OpenAI? => API v1
+        try:
+            from openai import OpenAI  # noqa: F401
+            _OPENAI_MODE = "v1"
+            return "v1", OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        except Exception:
+            # Ruta legacy v0
+            _OPENAI_MODE = "v0"
+            _oa.api_key = os.environ.get("OPENAI_API_KEY")
+            return "v0", _oa
+    except Exception as e:
+        raise RuntimeError(f"No se pudo importar openai: {e}")
+
+# ---------------------- funciones públicas LLM ----------------------
+def summarize_markdown(table_md: str, question: str) -> str:
+    if not has_openai():
+        return "Resumen: (sin OPENAI_API_KEY) Se muestran los resultados solicitados."
     global _LAST_LLM_ERROR
     _LAST_LLM_ERROR = None
+    try:
+        mode, client = _make_client()
+        prompt = (
+            "Eres un analista. Resume y prioriza para gestión la siguiente tabla "
+            f"respecto a la pregunta: \"{question}\". Sé claro y accionable.\n\n{table_md}"
+        )
+        if mode == "v1":
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            return resp.choices[0].message.content
+        else:  # v0
+            resp = client.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            # v0 devuelve dict-like
+            return resp["choices"][0]["message"]["content"]
+    except Exception as e:
+        _LAST_LLM_ERROR = f"LLM summarize error: {e}"
+        return f"(Error LLM: {e})"
+
+def nl2sql(question: str, schema_hint: str, params: dict | None = None) -> str | None:
     if not has_openai():
+        # no api key
+        global _LAST_LLM_ERROR
         _LAST_LLM_ERROR = "OPENAI_API_KEY no presente en entorno"
         return None
+
+    global _LAST_LLM_ERROR
+    _LAST_LLM_ERROR = None
     p = params or {}
     H = p.get("HORIZONTE_DIAS", 7)
+
     examples = f"""
 # Esquema disponible
 {schema_hint}
@@ -129,17 +187,28 @@ ORDER BY FIN.vencimiento ASC
 LIMIT 200
 """
     try:
-        from openai import OpenAI
-        client = OpenAI()
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Devuelve SOLO SQL DuckDB seguro; nada de texto extra."},
-                {"role": "user", "content": examples + f"\n\nAhora devuelve la SQL para:\n{question}"},
-            ],
-            temperature=0.1,
-        )
-        raw = resp.choices[0].message.content.strip()
+        mode, client = _make_client()
+        if mode == "v1":
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Devuelve SOLO SQL DuckDB seguro; nada de texto extra."},
+                    {"role": "user", "content": examples + f"\n\nAhora devuelve la SQL para:\n{question}"},
+                ],
+                temperature=0.1,
+            )
+            raw = resp.choices[0].message.content.strip()
+        else:
+            resp = client.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Devuelve SOLO SQL DuckDB seguro; nada de texto extra."},
+                    {"role": "user", "content": examples + f"\n\nAhora devuelve la SQL para:\n{question}"},
+                ],
+                temperature=0.1,
+            )
+            raw = resp["choices"][0]["message"]["content"].strip()
+
         return _normalize_sql(raw, params=p)
     except Exception as e:
         _LAST_LLM_ERROR = f"LLM nl2sql error: {e}"
@@ -155,4 +224,3 @@ def run_duckdb(sql: str, tables: dict[str, pd.DataFrame], prelude_sql: str | Non
     if prelude_sql:
         con.execute(prelude_sql)
     return con.execute(sql).df()
-
