@@ -22,10 +22,7 @@ def ensure_login():
         if u == user and p == pwd:
             st.session_state.authenticated = True
             st.success("Autenticado.")
-            if hasattr(st, "rerun"):
-    st.rerun()
-else:
-    st.experimental_rerun()
+            st.experimental_rerun()
         else:
             st.error("Usuario o contraseña incorrectos.")
     st.stop()
