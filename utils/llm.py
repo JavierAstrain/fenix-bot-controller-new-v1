@@ -1,4 +1,4 @@
-# utils/llm.py — compatibilidad openai v0/v1 + debug claro + import perezoso de duckdb
+# utils/llm.py — detección por versión (v1/v0) + debug + duckdb perezoso
 import os, re
 import pandas as pd
 
@@ -10,19 +10,28 @@ _OPENAI_MODE: str | None = None  # "v1" o "v0"
 def has_openai() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY"))
 
+def _get_openai_version() -> str:
+    global _OPENAI_VERSION
+    if _OPENAI_VERSION:
+        return _OPENAI_VERSION
+    try:
+        from importlib.metadata import version
+        _OPENAI_VERSION = version("openai")
+    except Exception:
+        try:
+            import openai as _oa  # noqa
+            _OPENAI_VERSION = getattr(_oa, "__version__", "desconocida")
+        except Exception:
+            _OPENAI_VERSION = "desconocida"
+    return _OPENAI_VERSION
+
 def llm_debug_info() -> str:
-    """Devuelve texto breve con el estado del LLM para mostrar en la UI."""
     parts = [f"OPENAI_API_KEY presente: {'sí' if has_openai() else 'no'}"]
-    global _OPENAI_VERSION, _OPENAI_MODE, _LAST_LLM_ERROR
+    global _OPENAI_MODE, _LAST_LLM_ERROR
     try:
         import openai  # noqa: F401
-        if _OPENAI_VERSION is None:
-            try:
-                from importlib.metadata import version
-                _OPENAI_VERSION = version("openai")
-            except Exception:
-                _OPENAI_VERSION = "desconocida"
-        parts.append(f"openai import: ok (v{_OPENAI_VERSION})")
+        ver = _get_openai_version()
+        parts.append(f"openai import: ok (v{ver})")
         if _OPENAI_MODE:
             parts.append(f"modo: {_OPENAI_MODE}")
     except Exception as e:
@@ -63,34 +72,30 @@ def _normalize_sql(sql: str, params: dict | None = None) -> str:
         sql += " LIMIT 200"
     return sql
 
-# ---------------------- cliente openai compatible ----------------------
+# ---------------------- cliente openai compatible por VERSIÓN ----------------------
 def _make_client():
     """
-    Devuelve (modo, cliente) donde:
-      - modo 'v1' => from openai import OpenAI(); usar client.chat.completions.create(...)
-      - modo 'v0' => import openai; usar openai.ChatCompletion.create(...)
+    Devuelve (modo, cliente):
+      - 'v1' → from openai import OpenAI; usar client.chat.completions.create(...)
+      - 'v0' → import openai; usar openai.ChatCompletion.create(...)
+    La elección se hace por número de versión (>=1 => v1, 0.x => v0).
     """
-    global _OPENAI_MODE, _OPENAI_VERSION
+    global _OPENAI_MODE
     try:
-        import openai as _oa
-        try:
-            from importlib.metadata import version
-            _OPENAI_VERSION = version("openai")
-        except Exception:
-            _OPENAI_VERSION = getattr(_oa, "__version__", "desconocida")
-
-        # ¿existe la clase OpenAI? => API v1
-        try:
-            from openai import OpenAI  # noqa: F401
-            _OPENAI_MODE = "v1"
-            return "v1", OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        except Exception:
-            # Ruta legacy v0
+        ver = _get_openai_version()
+        # Parse simple: si empieza con "0." → v0; en otro caso → v1
+        is_v0 = ver.startswith("0.")
+        if is_v0:
+            import openai as _oa
             _OPENAI_MODE = "v0"
             _oa.api_key = os.environ.get("OPENAI_API_KEY")
             return "v0", _oa
+        else:
+            from openai import OpenAI
+            _OPENAI_MODE = "v1"
+            return "v1", OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     except Exception as e:
-        raise RuntimeError(f"No se pudo importar openai: {e}")
+        raise RuntimeError(f"No se pudo inicializar openai: {e}")
 
 # ---------------------- funciones públicas LLM ----------------------
 def summarize_markdown(table_md: str, question: str) -> str:
