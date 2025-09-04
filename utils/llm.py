@@ -9,13 +9,13 @@ def summarize_markdown(table_md: str, question: str) -> str:
     try:
         from openai import OpenAI
         client = OpenAI()
-        prompt = f"""Eres un analista. Resume y prioriza para gestión la siguiente tabla (markdown)
-respecto a la pregunta: "{question}". Sé claro y accionable."""
+        prompt = (
+            "Eres un analista. Resume y prioriza para gestión la siguiente tabla "
+            f"respecto a la pregunta: \"{question}\". Sé claro y accionable.\n\n{table_md}"
+        )
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role":"user","content": prompt + "\n\n" + table_md}
-            ],
+            messages=[{"role":"user","content": prompt}],
             temperature=0.2,
         )
         return resp.choices[0].message.content
@@ -24,42 +24,75 @@ respecto a la pregunta: "{question}". Sé claro y accionable."""
 
 def safe_sql(sql: str) -> bool:
     s = sql.strip().lower()
-    return s.startswith("select ") and all(kw not in s for kw in [" insert ", " update ", " delete ", " drop ", " alter ", ";"])
+    # Permitimos solo SELECT; los ; ya se limpian en normalize_sql
+    return s.startswith("select ") and all(kw not in s for kw in [" insert ", " update ", " delete ", " drop ", " alter "])
+
+def _normalize_sql(sql: str) -> str:
+    """Quita fences, ; finales, espacios extra y evita LIMIT duplicado. Si no hay LIMIT, agrega uno."""
+    if not isinstance(sql, str):
+        return ""
+    # Extraer bloque ```sql``` si viene con fences
+    m = re.search(r"```sql(.*?)```", sql, flags=re.S | re.I)
+    if m:
+        sql = m.group(1)
+
+    sql = sql.strip()
+    # Eliminar ; finales
+    sql = re.sub(r";+\s*$", "", sql)
+    # Normalizar espacios
+    sql = re.sub(r"\s+", " ", sql).strip()
+
+    # Si el modelo ya puso LIMIT, no añadir otro.
+    # Primero, borrar LIMIT final si hay más de uno (quedarnos con uno solo)
+    # (Hacemos simple: quitamos el LIMIT final y luego lo volvemos a poner si no hay ninguno)
+    sql = re.sub(r"\s+limit\s+\d+\s*$", "", sql, flags=re.I)
+
+    # Si en otro lado existe LIMIT (p.ej., subquery), no añadimos uno global.
+    has_any_limit = re.search(r"\blimit\b", sql, flags=re.I) is not None
+    if not has_any_limit:
+        sql += " LIMIT 200"
+
+    return sql
 
 def nl2sql(question: str, schema_hint: str, params: dict | None = None) -> str | None:
     """
-    Convierte lenguaje natural a SQL DuckDB sobre las vistas MB y FIN.
-    Reglas fuertes:
-    - SIEMPRE seleccionar la ID principal: 'patente' (o 'ot' si no existe) como PRIMERA columna.
-    - Usar MB/FIN (no las tablas originales).
-    - LIMIT 200 si no hay límite.
-    - 'no facturado' = no_facturado_bool=TRUE ; 'entregado' = entregado_bool=TRUE.
-    - 'próximos días' = HORIZONTE_DIAS (default 7).
+    NL -> SQL (DuckDB) sobre vistas canónicas:
+      - MB: datos de MODELO_BOT con derivados (entregado_bool, no_facturado_bool, etc.)
+      - FIN: datos de FINANZAS con por_pagar_bool, etc.
+
+    Reglas:
+      - Siempre proyectar primero la ID: COALESCE(MB.patente, MB.ot) AS id (cuando use MB).
+      - Evitar SELECT *.
+      - Usar CURRENT_DATE para fechas relativas.
+      - 'entregados' = MB.entregado_bool = TRUE
+      - 'no facturado' = MB.no_facturado_bool = TRUE
+      - 'en taller' = MB.entregado_bool = FALSE
+      - 'por pagar' = FIN.por_pagar_bool = TRUE
+      - Si no hay LIMIT, añadir LIMIT 200 (evitando duplicados).
     """
     if not has_openai():
         return None
+
     p = params or {}
     H = p.get("HORIZONTE_DIAS", 7)
     MES = p.get("MES", None)
     ANIO = p.get("ANIO", None)
 
     examples = f"""
-# Esquema
+# Esquema disponible
 {schema_hint}
 
-# Reglas
-- Siempre seleccionar primero COALESCE(MB.patente, MB.ot) AS id si aplica.
-- Evitar SELECT *.
-- Usar CURRENT_DATE para fechas relativas.
-- Si no se indica límite, usa LIMIT 200.
+# Reglas adicionales
+- Cuando la consulta use MB, selecciona primero COALESCE(MB.patente, MB.ot) AS id si corresponde.
+- No repitas LIMIT si ya está presente. No agregues ';' al final.
 
-# Equivalencias
-- entregados = MB.entregado_bool = TRUE
-- no facturado = MB.no_facturado_bool = TRUE
-- en taller = MB.entregado_bool = FALSE
-- por pagar = FIN.por_pagar_bool = TRUE
+# Equivalencias semánticas
+- entregados -> MB.entregado_bool = TRUE
+- no facturado -> MB.no_facturado_bool = TRUE
+- en taller -> MB.entregado_bool = FALSE
+- por pagar -> FIN.por_pagar_bool = TRUE
 
-# Parámetros
+# Parámetros útiles
 - HORIZONTE_DIAS = {H}
 - MES_SELECCIONADO = {MES if MES else "(si no se especifica, no filtrar por mes)"}
 - ANIO_SELECCIONADO = {ANIO if ANIO else "(si no se especifica, no filtrar por año)"}
@@ -106,16 +139,13 @@ LIMIT 200
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role":"system","content": system},
-                {"role":"user","content": examples + f"\n\nAhora responde con la SQL para:\n{question}"}
+                {"role": "system", "content": system},
+                {"role": "user", "content": examples + f"\n\nAhora responde con la SQL para:\n{question}"},
             ],
             temperature=0.1,
         )
-        sql = resp.choices[0].message.content.strip()
-        m = re.search(r"```sql(.*?)```", sql, flags=re.S|re.I)
-        if m: sql = m.group(1).strip()
-        if " limit " not in sql.lower():
-            sql += " LIMIT 200"
+        raw = resp.choices[0].message.content.strip()
+        sql = _normalize_sql(raw)
         if safe_sql(sql):
             return sql
         return None
@@ -127,8 +157,9 @@ def run_duckdb(sql: str, tables: dict[str, pd.DataFrame], prelude_sql: str | Non
     # Registrar tablas crudas
     for name, df in tables.items():
         con.register(name, df)
-    # Crear vistas enriquecidas
+    # Crear vistas (prelude con MB/FIN)
     if prelude_sql:
         con.execute(prelude_sql)
-    # Ejecutar consulta
+    # Ejecutar consulta normalizada
     return con.execute(sql).df()
+
