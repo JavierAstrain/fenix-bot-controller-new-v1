@@ -16,13 +16,17 @@ def ensure_login():
     st.markdown("### 🔐 Iniciar sesión")
     u = st.text_input("Usuario", value="", key="login_user")
     p = st.text_input("Contraseña", value="", type="password", key="login_pass")
-    if st.button("Ingresar", type="primary"):
-        user = st.secrets.get("APP_USERNAME", "admin")
-        pwd = st.secrets.get("APP_PASSWORD", "admin")
-        if u == user and p == pwd:
-            st.session_state.authenticated = True
-            st.success("Autenticado.")
-            st.experimental_rerun()
+if st.button("Ingresar", type="primary"):
+    user = st.secrets.get("APP_USERNAME", st.secrets.get("USER", "admin"))
+    pwd  = st.secrets.get("APP_PASSWORD", st.secrets.get("PASSWORD", "admin"))
+    if u == user and p == pwd:
+        st.session_state.authenticated = True
+        st.success("Autenticado.")
+        if hasattr(st, "rerun"):
+            st.rerun()
         else:
-            st.error("Usuario o contraseña incorrectos.")
-    st.stop()
+            st.experimental_rerun()
+    else:
+        st.error("Usuario o contraseña incorrectos.")
+st.stop()
+
