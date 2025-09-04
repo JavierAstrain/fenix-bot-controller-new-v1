@@ -11,8 +11,8 @@ def has_openai() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY"))
 
 def llm_debug_info() -> str:
+    """Devuelve texto breve con el estado del LLM para mostrar en la UI."""
     parts = [f"OPENAI_API_KEY presente: {'sí' if has_openai() else 'no'}"]
-    # versión y modo
     global _OPENAI_VERSION, _OPENAI_MODE, _LAST_LLM_ERROR
     try:
         import openai  # noqa: F401
@@ -68,7 +68,7 @@ def _make_client():
     """
     Devuelve (modo, cliente) donde:
       - modo 'v1' => from openai import OpenAI(); usar client.chat.completions.create(...)
-      - modo 'v0' => import openai (legacy); usar openai.ChatCompletion.create(...)
+      - modo 'v0' => import openai; usar openai.ChatCompletion.create(...)
     """
     global _OPENAI_MODE, _OPENAI_VERSION
     try:
@@ -94,9 +94,9 @@ def _make_client():
 
 # ---------------------- funciones públicas LLM ----------------------
 def summarize_markdown(table_md: str, question: str) -> str:
+    global _LAST_LLM_ERROR
     if not has_openai():
         return "Resumen: (sin OPENAI_API_KEY) Se muestran los resultados solicitados."
-    global _LAST_LLM_ERROR
     _LAST_LLM_ERROR = None
     try:
         mode, client = _make_client()
@@ -117,20 +117,17 @@ def summarize_markdown(table_md: str, question: str) -> str:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
             )
-            # v0 devuelve dict-like
             return resp["choices"][0]["message"]["content"]
     except Exception as e:
         _LAST_LLM_ERROR = f"LLM summarize error: {e}"
         return f"(Error LLM: {e})"
 
 def nl2sql(question: str, schema_hint: str, params: dict | None = None) -> str | None:
+    global _LAST_LLM_ERROR
     if not has_openai():
-        # no api key
-        global _LAST_LLM_ERROR
         _LAST_LLM_ERROR = "OPENAI_API_KEY no presente en entorno"
         return None
 
-    global _LAST_LLM_ERROR
     _LAST_LLM_ERROR = None
     p = params or {}
     H = p.get("HORIZONTE_DIAS", 7)
@@ -198,7 +195,7 @@ LIMIT 200
                 temperature=0.1,
             )
             raw = resp.choices[0].message.content.strip()
-        else:
+        else:  # v0
             resp = client.ChatCompletion.create(
                 model="gpt-4o-mini",
                 messages=[
