@@ -125,40 +125,39 @@ tabs = st.tabs([
 ])
 
 # ---------- Tab 1: Auto-SQL ----------
-with tabs[0]:
-    st.markdown("### Preguntar libre (Auto-SQL)")
-    st.caption("El modelo traduce tu pregunta a SQL seguro (solo SELECT) sobre MODELO_BOT y FINANZAS.")
+prelude_sql, schema = build_duckdb_prelude_and_schema(data)
+params = {"HORIZONTE_DIAS": int(horizonte), "MES": int(mes), "ANIO": int(anio)}
+sql = nl2sql(q, schema_hint=schema, params=params)
+if not sql:
+    st.warning("No pude generar SQL automático (o falta OPENAI_API_KEY). Usa los botones rápidos.")
+else:
+    st.code(sql, language="sql")
+    try:
+        df = run_duckdb(sql, data, prelude_sql=prelude_sql)
 
-    q = st.text_input("Pregunta", "Facturación de marzo por tipo de cliente")
-    if st.button("Responder", key="free_q"):
-        # Esquema textual para el LLM
-        schema_lines = []
-        for name, df in data.items():
-            cols = ", ".join([f"`{c}`" for c in df.columns])
-            schema_lines.append(f"Tabla {name}({cols})")
-        schema = "\n".join(schema_lines)
+        # Reordenar: ID (patente/ot) primero si existe
+        cols = list(df.columns)
+        id_col = next((c for c in cols if c.lower() in ("id","patente","placa")), None)
+        if not id_col:
+            id_col = next((c for c in cols if c.lower() in ("ot","orden de trabajo")), None)
+        if id_col:
+            cols = [id_col] + [c for c in cols if c != id_col]
+            df = df[cols]
 
-        sql = nl2sql(q, schema_hint=schema)
-        if not sql:
-            st.warning("No pude generar SQL automático (o falta OPENAI_API_KEY). Usa los botones rápidos.")
+        if df.empty:
+            st.info("Sin resultados.")
         else:
-            st.code(sql, language="sql")
-            try:
-                df = run_duckdb(sql, data)
-                if df.empty:
-                    st.info("Sin resultados.")
-                else:
-                    show_table_and_download(df, "consulta_autosql")
-                    # Gráfico básico si hay 1 cat + 1 num
-                    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-                    cat_cols = [c for c in df.columns if df[c].dtype == object]
-                    if num_cols and cat_cols:
-                        fig = px.bar(df, x=cat_cols[0], y=num_cols[0])
-                        st.plotly_chart(fig, use_container_width=True)
-                    st.markdown("### Resumen")
-                    st.write(summarize_markdown(df.head(50).to_markdown(index=False), q))
-            except Exception as e:
-                st.error(f"Error al ejecutar SQL: {e}")
+            show_table_and_download(df, "consulta_autosql")
+            num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+            cat_cols = [c for c in df.columns if df[c].dtype == object]
+            if num_cols and cat_cols:
+                fig = px.bar(df, x=cat_cols[0], y=num_cols[0])
+                st.plotly_chart(fig, use_container_width=True)
+            st.markdown("### Resumen")
+            st.write(summarize_markdown(df_to_md(df), q))
+    except Exception as e:
+        st.error(f"Error al ejecutar SQL: {e}")
+
 
 # ---------- Tab 2: Botones rápidos ----------
 with tabs[1]:
