@@ -1,5 +1,5 @@
-# app.py — Agente Fénix (semántico + Auto-SQL fallback)
-import os, sys, io, base64, traceback, yaml
+# app.py — Agente Fénix (solo MODELO_BOT)
+import os, sys, io, base64, traceback
 from datetime import datetime
 import streamlit as st
 import pandas as pd
@@ -7,14 +7,13 @@ import plotly.express as px
 
 ICON_PATH = "assets/Isotipo_Nexa.png"
 try:
-    st.set_page_config(page_title="Agente Fénix",
-                       page_icon=ICON_PATH if os.path.exists(ICON_PATH) else None,
-                       layout="wide")
+    st.set_page_config(page_title="Agente Fénix", page_icon=ICON_PATH if os.path.exists(ICON_PATH) else None, layout="wide")
 except Exception:
     st.set_page_config(page_title="Agente Fénix", layout="wide")
 
 def _debug_on():
-    try: return str(st.query_params.get("debug", "0")) in ("1","true","True")
+    try:
+        return str(st.query_params.get("debug", "0")) in ("1","true","True")
     except Exception:
         qp = st.experimental_get_query_params()
         return qp.get("debug", ["0"])[0] in ("1","true","True")
@@ -25,7 +24,6 @@ if _debug_on():
     except Exception as e: st.sidebar.write("secrets error:", e)
     st.sidebar.write("python:", sys.version)
 
-# export OPENAI_API_KEY si existe
 try:
     if "OPENAI_API_KEY" not in os.environ and st.secrets.get("OPENAI_API_KEY"):
         os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
@@ -47,30 +45,26 @@ def safe_import(module_path, names):
 (df_to_md,) = safe_import("utils.md", ["df_to_md"])
 (build_duckdb_prelude_and_schema,) = safe_import("utils.schema", ["build_duckdb_prelude_and_schema"])
 (summarize_markdown, nl2sql, run_duckdb, has_openai, llm_debug_info) = safe_import("utils.llm", ["summarize_markdown","nl2sql","run_duckdb","has_openai","llm_debug_info"])
-# NUEVO: parser JSON y guard
 (parse_question_to_json,) = safe_import("utils.nlp", ["parse_question_to_json"])
 (verify_and_refine,) = safe_import("utils.llm_guard", ["verify_and_refine"])
-# Skills deterministas
 (
     skill_entregados_sin_factura,
-    skill_facturas_por_pagar,
+    skill_entregados_facturados,
     skill_top_en_taller,
     skill_facturacion_por_mes_tipo,
     skill_entregas_proximos_dias_sin_factura,
     skill_sin_aprobacion,
-) = safe_import("utils.skills",
-[
- "skill_entregados_sin_factura",
- "skill_facturas_por_pagar",
- "skill_top_en_taller",
- "skill_facturacion_por_mes_tipo",
- "skill_entregas_proximos_dias_sin_factura",
- "skill_sin_aprobacion",
+) = safe_import("utils.skills", [
+    "skill_entregados_sin_factura",
+    "skill_entregados_facturados",
+    "skill_top_en_taller",
+    "skill_facturacion_por_mes_tipo",
+    "skill_entregas_proximos_dias_sin_factura",
+    "skill_sin_aprobacion",
 ])
 
 ensure_login()
 
-# Fenix isotipo arriba derecha (opcional)
 def _b64(path: str) -> str:
     try:
         with open(path, "rb") as f: return base64.b64encode(f.read()).decode("utf-8")
@@ -89,23 +83,22 @@ with st.sidebar:
     st.markdown("---")
 
 st.title("🛠️ Agente Fénix")
-st.caption("Capa semántica + skills deterministas; Auto-SQL como respaldo.")
+st.caption("Solo MODELO_BOT. Capa semántica + skills deterministas; Auto-SQL de respaldo.")
 
-# Conexión Google Sheets
+# Conexión (solo MODELO_BOT)
 sheet_id = st.secrets.get("SHEET_ID", "")
 with st.sidebar:
     st.subheader("Conexión")
     try:
-        data = load_sheets(sheet_id, allow_sheets=("MODELO_BOT","FINANZAS"))
+        data = load_sheets(sheet_id, allow_sheets=("MODELO_BOT",))
         st.success("Google Sheets conectado (solo lectura).")
-        st.write("Hojas:", ", ".join(data.keys()))
+        st.write("Hoja:", "MODELO_BOT")
     except Exception as e:
         st.error(f"Error al conectar: {e}")
         st.info("Verifica SHEET_ID y comparte con el client_email de la service account (Viewer).")
         st.stop()
 
     st.subheader("Preferencias")
-    horizonte = st.number_input("Días (próximos)", 1, 60, value=7)
     mes = st.number_input("Mes para facturación", 1, 12, value=datetime.now().month)
     anio = st.number_input("Año para facturación", 2000, 2100, value=datetime.now().year)
 
@@ -116,7 +109,6 @@ with st.sidebar:
         st.session_state.authenticated = False
         st.rerun()
 
-# Utilidad para formatear y descargar
 def _fmt_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for c in out.columns:
@@ -139,26 +131,24 @@ def _show(df: pd.DataFrame, name: str):
         st.download_button("⬇️ XLSX", buff.getvalue(), f"{name}.xlsx",
                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# Carga YAML semántico
 @st.cache_data(show_spinner=False)
 def load_semantic_yaml():
     with open("semantic.yaml", "r", encoding="utf-8") as f:
         return f.read()
-semantic_text = ""
 try:
     semantic_text = load_semantic_yaml()
 except Exception as e:
+    semantic_text = ""
     st.sidebar.warning(f"No se pudo cargar semantic.yaml: {e}")
 
-tabs = st.tabs(["Preguntar (semántico) + Auto-SQL", "Botones rápidos (6 pruebas)"])
+tabs = st.tabs(["Preguntar (semántico) + Auto-SQL", "Botones rápidos", "Calibración"])
 
-# ------------ TAB 1 ------------
+# ---- TAB 1
 with tabs[0]:
     st.markdown("### Preguntar (semántico) + Auto-SQL de respaldo")
     q = st.text_input("Pregunta", "¿Cuáles son los vehículos entregados que aún no han sido facturas?")
     if st.button("Responder", key="btn_sem"):
         used_path = None
-        # 1) Ruta semántica (si hay YAML + API)
         if semantic_text and has_openai():
             parsed = parse_question_to_json(q, semantic_text)
             if parsed and parsed.get("metric"):
@@ -166,44 +156,19 @@ with tabs[0]:
                 filters = parsed.get("filters", {}) or {}
                 used_path = f"Semántico → {metric}"
                 try:
+                    MB = data.get("MODELO_BOT", next(iter(data.values())))
                     if metric == "entregados_sin_factura":
-                        df, err = skill_entregados_sin_factura(
-                            data.get("MODELO_BOT", next(iter(data.values()))),
-                            cliente=filters.get("cliente"),
-                            tipo_cliente=filters.get("tipo_cliente"),
-                            marca=filters.get("marca"),
-                            sucursal=filters.get("sucursal"),
-                            asesor=filters.get("asesor"),
-                            desde=filters.get("desde"),
-                            hasta=filters.get("hasta"),
-                        )
-                    elif metric == "facturas_por_pagar":
-                        df, err = skill_facturas_por_pagar(
-                            data.get("FINANZAS"), horizonte_dias=filters.get("horizonte", st.session_state.get("horizonte", 7)),
-                            proveedor=filters.get("proveedor")
-                        )
+                        df, err = skill_entregados_sin_factura(MB, **filters)
+                    elif metric == "entregados_facturados":
+                        df, err = skill_entregados_facturados(MB, **filters)
                     elif metric == "en_taller":
-                        df, err = skill_top_en_taller(
-                            data.get("MODELO_BOT", next(iter(data.values()))),
-                            topn=filters.get("topn", 10),
-                            marca=filters.get("marca"),
-                            asesor=filters.get("asesor"),
-                            tipo_cliente=filters.get("tipo_cliente"),
-                            sucursal=filters.get("sucursal"),
-                        )
+                        df, err = skill_top_en_taller(MB, **filters)
                     elif metric == "facturacion_mensual_tipo_cliente":
-                        df, err = skill_facturacion_por_mes_tipo(
-                            data.get("MODELO_BOT", next(iter(data.values()))),
-                            int(filters.get("mes", st.session_state.get("mes",  datetime.now().month))),
-                            int(filters.get("anio", st.session_state.get("anio", datetime.now().year))),
-                        )
+                        df, err = skill_facturacion_por_mes_tipo(MB, int(filters.get("mes", mes)), int(filters.get("anio", anio)))
                     elif metric == "entregas_proximas_sin_factura":
-                        df, err = skill_entregas_proximos_dias_sin_factura(
-                            data.get("MODELO_BOT", next(iter(data.values()))),
-                            int(filters.get("horizonte", 7)),
-                        )
+                        df, err = skill_entregas_proximos_dias_sin_factura(MB, int(filters.get("horizonte", 7)))
                     elif metric == "sin_aprobacion":
-                        df, err = skill_sin_aprobacion(data.get("MODELO_BOT", next(iter(data.values()))))
+                        df, err = skill_sin_aprobacion(MB)
                     else:
                         df, err = None, f"Métrica no implementada: {metric}"
                 except Exception as e:
@@ -216,23 +181,20 @@ with tabs[0]:
                     _show(df, "resultado_semantico")
                 else:
                     st.info("Ruta semántica devolvió 0 filas; intentaré Auto-SQL.")
-                    used_path = None  # forzar fallback
+                    used_path = None
 
-        # 2) Fallback → Auto-SQL (tu pipeline)
         if used_path is None:
             try:
-                prelude_sql, schema_hint = build_duckdb_prelude_and_schema(data)
-                params = {"HORIZONTE_DIAS": int(st.session_state.get("horizonte", 7) or 7),
-                          "MES": int(st.session_state.get("mes", datetime.now().month)),
-                          "ANIO": int(st.session_state.get("anio", datetime.now().year))}
+                prelude_sql, schema_hint = build_duckdb_prelude_and_schema({"MODELO_BOT": data["MODELO_BOT"]})
+                params = {"MES": int(mes), "ANIO": int(anio)}
                 sql = nl2sql(q, schema_hint=schema_hint, params=params)
                 if not sql:
                     st.warning("No pude generar SQL. Revisa el 'Estado LLM' en la barra lateral.")
                     st.info(llm_debug_info())
                 else:
                     st.code(sql, language="sql")
-                    df = run_duckdb(sql, data, prelude_sql=prelude_sql)
-                    if df.empty: st.info("Sin resultados."); 
+                    df = run_duckdb(sql, {"MODELO_BOT": data["MODELO_BOT"]}, prelude_sql=prelude_sql)
+                    if df.empty: st.info("Sin resultados.")
                     else:
                         _show(df, "resultado_autosql")
                         try:
@@ -244,16 +206,14 @@ with tabs[0]:
                 st.error("Error en Auto-SQL:")
                 st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
 
-# ------------ TAB 2 ------------
+# ---- TAB 2
 with tabs[1]:
-    st.markdown("### Botones rápidos (las 6 preguntas prioritarias)")
-    df_main = data.get("MODELO_BOT", next(iter(data.values())))
-    df_fin = data.get("FINANZAS", None)
+    st.markdown("### Botones rápidos (MODELO_BOT)")
+    MB = data.get("MODELO_BOT", next(iter(data.values())))
 
     c = st.columns(2)
-
     with c[0]:
-        st.subheader("1) Entregados sin factura")
+        st.subheader("Entregados SIN factura")
         cliente = st.text_input("Cliente (contiene)", key="f1_cli")
         tipo_cli = st.text_input("Tipo cliente (exacto)", key="f1_tc")
         marca = st.text_input("Marca (exacto)", key="f1_marca")
@@ -262,90 +222,79 @@ with tabs[1]:
         fdesde = st.text_input("Fecha desde (YYYY-MM-DD)", key="f1_fd")
         fhasta = st.text_input("Fecha hasta (YYYY-MM-DD)", key="f1_fh")
         if st.button("Ejecutar 1"):
-            table, err = skill_entregados_sin_factura(df_main, cliente or None, tipo_cli or None, marca or None, suc or None, asesor or None, fdesde or None, fhasta or None)
+            table, err = skill_entregados_sin_factura(MB, cliente=cliente or None, tipo_cliente=tipo_cli or None,
+                                                      marca=marca or None, sucursal=suc or None, asesor=asesor or None,
+                                                      desde=fdesde or None, hasta=fhasta or None)
             if err: st.warning(err)
             elif table.empty: st.info("Sin resultados.")
             else: _show(table, "entregados_sin_factura")
 
     with c[1]:
-        st.subheader("2) Por pagar próximos días (FINANZAS)")
-        prov = st.text_input("Proveedor (contiene)", key="f2_prov")
+        st.subheader("Entregados CON factura")
         if st.button("Ejecutar 2"):
-            if df_fin is None: st.warning("No se encontró hoja FINANZAS.")
-            else:
-                table, err = skill_facturas_por_pagar(df_fin, horizonte_dias=int(horizonte), proveedor=prov or None)
-                if err: st.warning(err)
-                elif table.empty: st.info("Sin resultados.")
-                else: _show(table, "facturas_por_pagar")
+            table, err = skill_entregados_facturados(MB)
+            if err: st.warning(err)
+            elif table.empty: st.info("Sin resultados.")
+            else: _show(table, "entregados_facturados")
 
     with c[0]:
-        st.subheader("3) Top en taller (no entregados)")
+        st.subheader("Top en taller (no entregados)")
         topn = st.number_input("Top N", 1, 100, value=10, key="f3_top")
-        marca3 = st.text_input("Marca (exacto)", key="f3_marca")
-        asesor3 = st.text_input("Asesor (contiene)", key="f3_ase")
-        tipo3 = st.text_input("Tipo cliente (exacto)", key="f3_tc")
-        suc3 = st.text_input("Sucursal (exacto)", key="f3_suc")
         if st.button("Ejecutar 3"):
-            table, err = skill_top_en_taller(df_main, int(topn), marca3 or None, asesor3 or None, tipo3 or None, suc3 or None)
+            table, err = skill_top_en_taller(MB, topn=int(topn))
             if err: st.warning(err)
             elif table.empty: st.info("Sin resultados.")
             else:
                 _show(table, "top_en_taller")
-                try: st.plotly_chart(px.bar(table, x=table.columns[0], y="dias_en_taller"), use_container_width=True)
+                try: st.plotly_chart(px.bar(table, x=table.columns[0], y="NUMERO_DIAS_EN_PLANTA"), use_container_width=True)
                 except Exception: pass
 
     with c[1]:
-        st.subheader("4) Facturación por mes / tipo cliente")
+        st.subheader("Facturación por mes / tipo cliente")
         if st.button("Ejecutar 4"):
-            table, err = skill_facturacion_por_mes_tipo(df_main, int(mes), int(anio))
+            table, err = skill_facturacion_por_mes_tipo(MB, int(mes), int(anio))
             if err: st.warning(err)
             elif table.empty: st.info("Sin resultados.")
             else:
                 _show(table, "facturacion_mes_tipo")
-                try: st.plotly_chart(px.pie(table, names=table.columns[0], values="monto"), use_container_width=True)
+                try: st.plotly_chart(px.pie(table, names=table.columns[0], values="MONTO_NETO"), use_container_width=True)
                 except Exception: pass
 
     with c[0]:
-        st.subheader("5) Entregas próximos días SIN facturación")
+        st.subheader("Entregas próximos días SIN facturación")
+        horizonte = st.number_input("Días", 1, 60, value=7, key="f5_h")
         if st.button("Ejecutar 5"):
-            table, err = skill_entregas_proximos_dias_sin_factura(df_main, int(horizonte))
+            table, err = skill_entregas_proximos_dias_sin_factura(MB, int(horizonte))
             if err: st.warning(err)
             elif table.empty: st.info("Sin resultados.")
             else: _show(table, "entregas_proximas_sin_factura")
 
     with c[1]:
-        st.subheader("6) En taller sin aprobación (proxy)")
+        st.subheader("En taller SIN aprobación (proxy)")
         if st.button("Ejecutar 6"):
-            table, err = skill_sin_aprobacion(df_main)
+            table, err = skill_sin_aprobacion(MB)
             if err: st.warning(err)
             elif table.empty: st.info("Sin resultados.")
             else: _show(table, "sin_aprobacion")
 
-    tabs = st.tabs(["Preguntar (semántico) + Auto-SQL", "Botones rápidos (6 pruebas)", "Calibración"])
-
+# ---- TAB 3 (Calibración)
 with tabs[2]:
-    st.markdown("### Calibración rápida")
-    st.write("**Objetivo:** verificar el mapeo de columnas. Si algo no corresponde, edita `column_map.yaml`.")
-    df_main = data.get("MODELO_BOT", next(iter(data.values())))
-    df_fin  = data.get("FINANZAS", None)
-
-    st.subheader("MODELO_BOT — columnas disponibles")
-    st.write(list(df_main.columns))
+    st.markdown("### Calibración (ver lectura real de columnas)")
+    MB = data.get("MODELO_BOT", next(iter(data.values())))
+    st.subheader("Encabezados MODELO_BOT")
+    st.write(list(MB.columns))
 
     import yaml, os
     current_map = {}
     if os.path.exists("column_map.yaml"):
         current_map = yaml.safe_load(open("column_map.yaml","r",encoding="utf-8")) or {}
     st.subheader("Mapeo actual (column_map.yaml)")
-    st.json(current_map)
+    st.json(current_map.get("MODELO_BOT", {}))
 
-    from utils.skills import _build_mb, _build_fin  # solo para diagnóstico
-    st.subheader("Preview derivadas (MB)")
-    prev_mb = _build_mb(df_main).head(10)
-    st.dataframe(prev_mb[["id","cliente","fecha_recepcion","fecha_entrega","factura_num","factura_fecha","entregado_bool","no_facturado_bool"]])
-
-    if df_fin is not None:
-        st.subheader("Preview derivadas (FINANZAS)")
-        prev_fin = _build_fin(df_fin).head(10)
-        st.dataframe(prev_fin[["factura_num","proveedor","vencimiento","monto","por_pagar_bool"]])
-
+    from utils.skills import _build_mb
+    prev = _build_mb(MB).head(15)
+    st.subheader("Preview derivadas (verifica booleans)")
+    cols = ["id","NOMBRE_CLIENTE","FECHA_RECEPCION","FECHA_ENTREGA","NUMERO_FACTURA","FECHA_FACTURACION",
+            "entregado_bool","facturado_bool","no_facturado_bool","_estado_servicio_norm","_facturado_flag_norm"]
+    cols = [c for c in cols if c in prev.columns]
+    st.dataframe(prev[cols], use_container_width=True)
