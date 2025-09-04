@@ -1,0 +1,60 @@
+# Catálogo de métricas del negocio (resumen inicial; se puede ampliar)
+metrics:
+  entregados_sin_factura:
+    table: MB
+    select: ["id","cliente","fecha_entrega","dias_desde_entrega"]
+    filter: "MB.entregado_bool = TRUE AND MB.no_facturado_bool = TRUE"
+    order_by: "fecha_entrega DESC"
+    limit: 200
+    synonyms: ["entregados sin factura","pendientes de facturar","entregas no facturadas","entrega sin facturar"]
+
+  facturas_por_pagar:
+    table: FIN
+    select: ["factura_num","proveedor","vencimiento","monto"]
+    filter: "FIN.por_pagar_bool = TRUE AND FIN.vencimiento BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL {H} DAY"
+    order_by: "vencimiento ASC"
+    limit: 200
+    synonyms: ["por pagar","cuentas por pagar","pendientes de pago","vencen en","por vencer"]
+
+  en_taller:
+    table: MB
+    select: ["id","cliente","fecha_recepcion","dias_en_taller"]
+    filter: "MB.entregado_bool = FALSE"
+    order_by: "dias_en_taller DESC"
+    limit: 200
+    synonyms: ["en taller","no entregados","en reparación","pendientes taller","tiempo en taller"]
+
+  facturacion_mensual_tipo_cliente:
+    table: MB
+    select: ["tipo_cliente","SUM(MB.monto) AS monto"]
+    filter: "EXTRACT(month FROM MB.fecha_op) = {MES} AND EXTRACT(year FROM MB.fecha_op) = {ANIO}"
+    group_by: ["tipo_cliente"]
+    order_by: "monto DESC"
+    limit: 200
+    synonyms: ["facturación por mes por tipo","venta mensual por tipo de cliente","facturación mensual tipo cliente"]
+
+  entregas_proximas_sin_factura:
+    table: MB
+    select: ["id","cliente","fecha_entrega","dias_desde_entrega"]
+    filter: "MB.entregado_bool = TRUE AND MB.no_facturado_bool = TRUE AND MB.fecha_entrega BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL {H} DAY"
+    order_by: "fecha_entrega ASC"
+    limit: 200
+    synonyms: ["entregas próximas sin facturar","por entregar sin factura","se entregan próximos días sin facturar"]
+
+  sin_aprobacion:
+    table: MB
+    select: ["id","cliente","fecha_recepcion","dias_en_taller"]
+    # Proxy de "sin aprobación": no entregados y sin factura/estado no aprobado (ajustable)
+    filter: "MB.entregado_bool = FALSE AND MB.no_facturado_bool = TRUE"
+    order_by: "dias_en_taller DESC"
+    limit: 200
+    synonyms: ["sin aprobación","pendiente de aprobación","esperando aprobación"]
+
+synonyms:
+  patente: [placa, matrícula]
+  entregados: [entrega, entregado]
+  sin_factura: [no facturado, pendiente de facturar, sin facturar]
+  asesor: [ejecutivo, vendedor]
+  sucursal: [sede]
+  cliente: [razon social, razón social]
+  facturacion: [ventas, facturas]
