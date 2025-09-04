@@ -1,0 +1,9 @@
+streamlit>=1.33.0
+pandas>=2.0.0
+numpy>=1.26.0
+gspread>=6.0.0
+google-auth>=2.29.0
+duckdb>=1.0.0
+openai>=1.30.0
+plotly>=5.22.0
+xlsxwriter>=3.2.0
