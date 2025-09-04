@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 from utils.md import df_to_md
+from utils.schema import build_duckdb_prelude_and_schema
 
 from utils.gsheets import load_sheets
 from utils.skills import (
